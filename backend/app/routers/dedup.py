@@ -1,10 +1,11 @@
-"""采集去重接口：维护去重策略，覆盖提交配置、启用策略、停用策略等动作。"""
+"""采集去重接口：维护去重策略，并在已确认的网页正文明细上执行去重。"""
 from __future__ import annotations
 
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from app.config import settings
 from app.schemas import ActionResult, EntryPayload, PageResult
 from app.services.dedup import DedupService
 
@@ -16,11 +17,64 @@ LIST_FIELDS = ["策略编号", "输入来源", "去重键", "排序字段", "保
 STATUSES = ["草稿", "已配置", "生效中", "已停用"]
 
 
+def _page_size(size: int) -> int:
+    if size > settings.page_size_max:
+        raise HTTPException(
+            status_code=400,
+            detail=f"每页最多 {settings.page_size_max} 条，请缩小分页范围",
+        )
+    return size
+
+
 @router.get("/export")
 def export_entries() -> dict[str, Any]:
     """导出采集去重清单：返回当前过滤条件下的全量数据。"""
     items, total = service.list_entries(page=1, size=10000)
     return {"module": "dedup", "total": total, "items": items}
+
+
+@router.get("/results", response_model=PageResult[dict])
+def list_results(
+    strategy_code: str | None = Query(default=None, description="按策略编号过滤"),
+    rule_code: str | None = Query(default=None, description="按采集规则编号过滤"),
+    source_url: str | None = Query(default=None, description="按来源网址检索"),
+    page: int = 1,
+    size: int = 20,
+) -> PageResult[dict]:
+    """去重结果：重复页与保留记录的对照，保留记录指向已确认的网页正文明细。"""
+    items, total = service.list_results(
+        strategy_code=strategy_code,
+        rule_code=rule_code,
+        source_url=source_url,
+        page=page,
+        size=_page_size(size),
+    )
+    return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.post("/{entry_id}/preview", response_model=ActionResult)
+def preview(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """预演去重口径：只读已确认正文，返回会识别出的重复组，不写结果。"""
+    failure = service.preview_failure(entry_id)
+    if failure:
+        return ActionResult(ok=False, message=failure)
+    result = service.preview(entry_id, payload.values)
+    if result is None:
+        return ActionResult(ok=False, message=f"去重策略 {entry_id} 不存在或已归档")
+    return ActionResult(
+        ok=True,
+        message=f"将比对 {result['比对条数']} 条已确认正文，识别 {result['重复组数']} 组重复",
+        entry=result,
+    )
+
+
+@router.post("/{entry_id}/run", response_model=ActionResult)
+def run_dedup(entry_id: int, payload: EntryPayload) -> ActionResult:
+    """执行去重：按来源网址与正文识别重复页，并记录重复页对应的保留记录。"""
+    result, message = service.run(entry_id, payload.values)
+    if result is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=result)
 
 
 @router.get("", response_model=PageResult[dict])

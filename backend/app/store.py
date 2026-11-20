@@ -8,6 +8,16 @@ from typing import Any
 
 from app.seed import SEED_ROWS
 
+# 采集批次、页面样本、网页正文明细、去重结果是采集规则与采集去重的内部数据集，
+# 不在运营概览里单独算一个业务模块，但和普通表一样可以通过 store 读取。
+AUXILIARY_MODULES = {
+    "crawler_sample",
+    "crawler_batch",
+    "crawler_page",
+    "crawler_detail",
+    "dedup_result",
+}
+
 
 class Store:
     def __init__(self) -> None:
@@ -16,7 +26,7 @@ class Store:
         }
 
     def module_names(self) -> list[str]:
-        return sorted(self._tables)
+        return sorted(name for name in self._tables if name not in AUXILIARY_MODULES)
 
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])
